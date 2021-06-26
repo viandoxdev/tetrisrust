@@ -22,7 +22,7 @@ impl TetrisContext {
     }
 
     
-
+    // draw the framebuffer and replace it
     fn render(&mut self) {
         self.framebuffer.draw();
         self.framebuffer = Framebuffer::new(self.term_width, self.term_height);
@@ -64,7 +64,7 @@ enum Rotation {
     South,
     West
 }
-
+#[derive(Copy, Clone)]
 impl Rotation {
     fn get_mat2(&self) -> Mat2 {
         match self {
@@ -84,6 +84,22 @@ impl Rotation {
                 0f32,-1f32,
                 1f32, 0f32
             ])
+        }
+    }
+    fn rotateCW(self) -> Self {
+        match self {
+            Rotation::North => Rotation::East,
+            Rotation:: East => Rotation::South,
+            Rotation::South => Rotation::West,
+            Rotation:: West => Rotation::North
+        }
+    }
+    fn rotateCCW(self) -> Self {
+        match self {
+            Rotation::North => Rotation::West,
+            Rotation:: East => Rotation::North,
+            Rotation::South => Rotation::East,
+            Rotation:: West => Rotation::South
         }
     }
 }
@@ -127,7 +143,6 @@ impl Framebuffer {
         let ydens = 1.0;
         let h = (height as f32 / ydens).floor() as u16;
         let w = (width as f32 / xdens).floor() as u16;
-        println!("{} {} {} {}", width, height, w, h);
         Framebuffer {
             term_width:  width,
             term_height: height,
@@ -162,6 +177,12 @@ impl Framebuffer {
         let index = (y * self.width + x) as usize;
         self.data.remove(index);
         self.data.insert(index, value);
+    }
+
+    fn make_space(&self) {
+        for _ in 0..self.height {
+            println!("");
+        }
     }
 
     fn draw(&self) {
@@ -203,7 +224,12 @@ impl TetrisShape {
         }
     }
 
-    fn get_rotation(&self, rot: Rotation) -> Self {
+    fn get_rounded_center(&self) -> Vec2<i32> {
+        // need this to round half away towards 0
+        // (0 -> 0, 0.5 -> 0, 0.6 -> 1, 1 -> 1)
+        self.get_center().map(|x: f32| if x.fract() > 0.5 {x.ceil()} else {x.floor()} as i32)
+    }
+    fn clone_with_rotation(&self, rot: Rotation) -> Self {
         if rot == Rotation::North {
             return self.clone();
         }
@@ -215,7 +241,7 @@ impl TetrisShape {
         for block in res.blocks.iter_mut() {
             let boff = block.to_type::<f32>() - center;
             let rotated_boff = mat.mul_vec(boff);
-            *block += (center + rotated_boff).map(|v| v as u16);
+            *block = (center + rotated_boff).map(|v| v as u16);
             // lower the shape by one if the rotation in 180°
             // to follow the DTET rotation standard
             if rot == Rotation::South && self.should_shape_be_lowered_on_180_rotation {
@@ -225,23 +251,63 @@ impl TetrisShape {
         res
     }
 
+    fn get_blocks_in_absolute_coordinates(&self, x: u16, y: u16) -> Vec<Vec2<u16>>{
+        let center = self.get_rounded_center();
+        let pos = Vec2{x, y};
+        self.blocks.iter()
+            .map(|v| (pos.to_type::<i32>() + v.to_type::<i32>() - center).map(|a| a as u16))
+            .collect::<Vec<Vec2<u16>>>()
+    }
+
     fn draw_to_framebuffer(&self, buff: &mut Framebuffer, x: u16, y: u16) {
-        let center = self.get_center();
-        // need this to round half away towards 0
-        // (0 -> 0, 0.5 -> 0, 0.6 -> 1, 1 -> 1)
-        let round = |x: f32| if x.fract() > 0.5 {x.ceil()} else {x.floor()} as i32;
-        let center = center.map(round);
-        let pos = Vec2 {
-            x, y
-        }; 
-        for block in self.blocks.iter() {
-            let off = block.to_type::<i32>() - center;
-            let coords = pos.to_type::<i32>() + off;
-            buff.set_pixel(coords.x as u16, coords.y as u16, self.render_as.clone());
+        for b in self.get_blocks_in_absolute_coordinates(x, y).iter() {
+            buff.set_pixel(b.x, b.y, self.render_as.clone());
         }
     }
 }
 
+struct Tetriminos {
+    shape: TetrisShape,
+    pos: Vec2<i32>,
+    rotation: Rotation
+}
+
+impl Tetriminos {
+    fn new(pos: Vec2<i32>, shape: TetrisShape) -> Self {
+        Tetriminos {
+            shape,
+            pos,
+            rotation: Rotation::North
+        }
+    }
+    fn set_rotation(&mut self, rot: Rotation) {
+        self.rotation = rot;
+        self.shape = self.shape.clone_with_rotation(self.rotation);
+    }
+    fn rotateCW(&mut self) {
+        self.set_rotation(self.rotation.rotateCW());
+    }
+    fn rotateCCW(&mut self) {
+        self.set_rotation(self.rotation.rotateCCW());
+    }
+    fn draw_to_framebuffer(&self,framebuffer:&mut Framebuffer) {
+        self.shape.draw_to_framebuffer(framebuffer, self.pos.x as u16, self.pos.y as u16);
+    }
+    fn into_leftover_block(self) {
+        let poses = self.shape.get_blocks_in_absolute_coordinates(self.pos.x as u16, self.pos.y as u16);
+    }
+}
+
+struct LeftoverBlock {
+    pos: Vec2<i32>,
+    render_as: Pixel
+}
+
+impl LeftoverBlock {
+    fn draw_to_framebuffer(&self, framebuffer: &mut Framebuffer) {
+        framebuffer.set_pixel(self.pos.x as u16, self.pos.y as u16, self.render_as);
+    }
+}
 
 fn main() {
     let mut ctx = TetrisContext::init();
@@ -312,38 +378,40 @@ fn main() {
 
 
     ];
-    let mut xoff = 3u16;
-    let mut yoff = 3u16;
-    let margin = 3u16;
+    let mut xoff = 0u16;
+    let mut yoff = 1u16;
+    let margin = 1u16;
+    let mut lastheight = 0u16;
     for shape in shapes.iter() {
         let shapequeue = [
-            shape.get_rotation(Rotation::North),
-            shape.get_rotation(Rotation::East),
-            shape.get_rotation(Rotation::South),
-            shape.get_rotation(Rotation::West)
+            shape.clone_with_rotation(Rotation::North),
+            shape.clone_with_rotation(Rotation::East),
+            shape.clone_with_rotation(Rotation::South),
+            shape.clone_with_rotation(Rotation::West)
         ];
         let bboxes = shapequeue.iter()
             .map(|v| v.get_bounding_box());
         let width = bboxes.clone().map(|bbox| bbox.width()).reduce(|a, b| a + b + margin).unwrap();
         let height = bboxes       .map(|bbox| bbox.height()).reduce(std::cmp::max).unwrap() + margin;
+        lastheight = std::cmp::max(height, lastheight);
         if xoff as i32 + width as i32 + margin as i32 >= ctx.framebuffer.width as i32 {
-            xoff = 3;
-            yoff += height;
+            xoff = 0;
+            yoff += lastheight;
+            lastheight = 0;
         }
 
-        println!("drawing shapes:");
-        println!("  width: {}", width);
-        println!("  height: {}", height);
-        println!("  xoff: {}", xoff);
-        println!("  yoff: {}", yoff);
         for s in shapequeue.iter() {
             let bbox = s.get_bounding_box();
             let w = bbox.width();
-            println!("  --> drawing (width: {})", w);
-            s.draw_to_framebuffer(&mut ctx.framebuffer, xoff, yoff);
+            let off = Vec2 {
+                x: xoff,
+                y: yoff
+            };
+            let coord = off + s.get_rounded_center().map(|v| v as u16) - bbox.start;
+            s.draw_to_framebuffer(&mut ctx.framebuffer, coord.x, coord.y);
             xoff += w + margin;
         }
     }
-    println!("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
+    ctx.framebuffer.make_space();
     ctx.render();
 }

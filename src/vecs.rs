@@ -1,4 +1,4 @@
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Vec2<T> {
     pub x: T,
     pub y: T
@@ -117,8 +117,8 @@ where T: std::ops::Sub<Output=T> + Copy {
 }
 
 pub struct BoundingBox<T> {
-    start: Vec2<T>,
-    end: Vec2<T>
+    pub start: Vec2<T>,
+    pub end: Vec2<T>
 }
 
 impl<T> BoundingBox<T> {
